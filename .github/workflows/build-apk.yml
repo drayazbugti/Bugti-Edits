@@ -33,7 +33,10 @@ jobs:
           gradle-version: '9.3.1'
 
       - name: Decode debug keystore
-        run: base64 -d debug.keystore.base64 > debug.keystore
+        run: |
+          if [ ! -f debug.keystore ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
 
       - name: Build Debug APK
         run: gradle :app:assembleDebug --no-daemon --no-configuration-cache
