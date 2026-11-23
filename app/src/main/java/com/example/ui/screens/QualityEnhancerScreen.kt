@@ -94,11 +94,13 @@ fun QualityEnhancerScreen(
     segment: EnhanceSegment,
     selectedMode: EnhanceMode,
     splitPosition: Float,
+    isOnline: Boolean,
     onBackClick: () -> Unit,
     onSelectSegment: (EnhanceSegment) -> Unit,
     onSelectMode: (EnhanceMode) -> Unit,
     onSplitChange: (Float) -> Unit,
     onTryNowClick: () -> Unit,
+    onBatchEnhanceClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val visibleModes = EnhanceMode.entries.filter { it.segment == segment && it != EnhanceMode.NONE }
@@ -153,12 +155,12 @@ fun QualityEnhancerScreen(
                 Surface(
                     shape = RoundedCornerShape(999.dp),
                     color = SurfaceElevated,
-                    border = BorderStroke(1.dp, BorderSubtle)
+                    border = BorderStroke(1.dp, Color(0xFF4ADBC8).copy(alpha = 0.45f))
                 ) {
                     Text(
-                        text = "Bugti Studio Engine",
+                        text = "Offline 4K AI",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TextSecondary,
+                        color = Color(0xFF4ADBC8),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                     )
                 }
@@ -270,26 +272,52 @@ fun QualityEnhancerScreen(
                 Spacer(modifier = Modifier.height(20.dp))
             }
 
-            // Primary "Try now" white pill CTA
-            Button(
-                onClick = onTryNowClick,
+            // Primary "Try now" + "Batch Enhance" CTAs
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 14.dp)
-                    .height(56.dp)
-                    .testTag("qe_try_now_button"),
-                shape = RoundedCornerShape(999.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = SurfaceBright,
-                    contentColor = TextOnWhite
-                )
+                    .padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = stringResource(R.string.cta_try_now),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = TextOnWhite
-                )
+                Surface(
+                    onClick = onBatchEnhanceClick,
+                    modifier = Modifier
+                        .weight(0.95f)
+                        .height(54.dp)
+                        .testTag("qe_batch_enhance_button"),
+                    shape = RoundedCornerShape(999.dp),
+                    color = Color(0xFF282046),
+                    border = BorderStroke(1.dp, Color(0xFF8B6EFF))
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "Batch Photos",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = onTryNowClick,
+                    modifier = Modifier
+                        .weight(1.15f)
+                        .height(54.dp)
+                        .testTag("qe_try_now_button"),
+                    shape = RoundedCornerShape(999.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = SurfaceBright,
+                        contentColor = TextOnWhite
+                    )
+                ) {
+                    Text(
+                        text = stringResource(R.string.cta_try_now),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = TextOnWhite
+                    )
+                }
             }
         }
     }

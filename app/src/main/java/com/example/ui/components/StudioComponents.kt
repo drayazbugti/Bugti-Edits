@@ -2,6 +2,8 @@ package com.example.ui.components
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -26,35 +28,62 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AcUnit
+import androidx.compose.material.icons.filled.Animation
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.CenterFocusStrong
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Colorize
 import androidx.compose.material.icons.filled.Compare
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Diamond
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.FaceRetouchingNatural
 import androidx.compose.material.icons.filled.FilterBAndW
+import androidx.compose.material.icons.filled.FitScreen
+import androidx.compose.material.icons.filled.Flip
+import androidx.compose.material.icons.filled.Gradient
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.Hd
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LocalFireDepartment
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MovieFilter
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.NoiseAware
+import androidx.compose.material.icons.filled.OpenWith
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PersonRemove
 import androidx.compose.material.icons.filled.PhotoFilter
+import androidx.compose.material.icons.filled.PhotoSizeSelectLarge
+import androidx.compose.material.icons.filled.PlayCircleOutline
+import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.TagFaces
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VideoCameraFront
 import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.VideoStable
 import androidx.compose.material.icons.filled.ViewCarousel
+import androidx.compose.material.icons.filled.Vignette
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.outlined.AccessibilityNew
@@ -152,6 +181,7 @@ fun toolIconFor(id: StudioToolId): ImageVector = when (id) {
     StudioToolId.QUALITY_ENHANCER -> Icons.Filled.Hd
     StudioToolId.SMART_ENHANCE -> Icons.Filled.AutoAwesome
     StudioToolId.SUPER_RESOLUTION -> Icons.Filled.HighQuality
+    StudioToolId.BATCH_ENHANCE -> Icons.Filled.Layers
     StudioToolId.AI_REMOVAL -> Icons.Filled.AutoFixHigh
     StudioToolId.FACE -> Icons.Filled.Face
     StudioToolId.BODY -> Icons.Outlined.AccessibilityNew
@@ -159,22 +189,54 @@ fun toolIconFor(id: StudioToolId): ImageVector = when (id) {
     StudioToolId.COLOR_MATCH -> Icons.Filled.Palette
     StudioToolId.HAIR -> Icons.Filled.Brush
     StudioToolId.MAKEUP -> Icons.Filled.AutoFixHigh
-    StudioToolId.TRENDING -> Icons.Filled.LocalFireDepartment
     StudioToolId.ALL_TOOLS -> Icons.Filled.GridView
     StudioToolId.EDIT -> Icons.Filled.ContentCut
     StudioToolId.FILTERS -> Icons.Filled.FilterBAndW
     StudioToolId.ADJUST -> Icons.Filled.Tune
     StudioToolId.ENHANCE -> Icons.Filled.HighQuality
+    StudioToolId.AI_EDIT -> Icons.Filled.AutoAwesome
     StudioToolId.EFFECTS -> Icons.Filled.PhotoFilter
     StudioToolId.TEXT -> Icons.Filled.TextFields
     StudioToolId.MOSAIC -> Icons.Outlined.BlurOn
     StudioToolId.REMOVAL -> Icons.Outlined.CleaningServices
     StudioToolId.OVERLAY -> Icons.Filled.Layers
+    StudioToolId.ANIMATE -> Icons.Filled.PlayCircleOutline
+    StudioToolId.CUTOUT -> Icons.Filled.PersonRemove
+    StudioToolId.CHROMA -> Icons.Filled.Colorize
+    StudioToolId.FREEZE -> Icons.Filled.AcUnit
+    StudioToolId.REPLACE -> Icons.Filled.SwapHoriz
+    StudioToolId.CAMERA_TRACKING -> Icons.Filled.CenterFocusStrong
+    StudioToolId.VOCAL_SEPARATION -> Icons.Filled.RecordVoiceOver
+    StudioToolId.NOISE_REDUCTION -> Icons.Filled.NoiseAware
+    StudioToolId.DETECT_SILENCE -> Icons.Filled.GraphicEq
+    StudioToolId.SEPARATE_AUDIO -> Icons.Filled.Mic
+    StudioToolId.SOUND -> Icons.Filled.MusicNote
+    StudioToolId.COPY -> Icons.Filled.ContentCopy
+    StudioToolId.TRIM -> Icons.Filled.Crop
+    StudioToolId.SPLIT -> Icons.Filled.ContentCut
+    StudioToolId.MASK -> Icons.Filled.Vignette
+    StudioToolId.STABILIZE -> Icons.Filled.VideoStable
+    StudioToolId.CUT -> Icons.Filled.ContentCut
+    StudioToolId.SPEED -> Icons.Filled.Speed
+    StudioToolId.ANIMATION -> Icons.Filled.Animation
+    StudioToolId.VOLUME -> Icons.Filled.VolumeUp
+    StudioToolId.DELETE -> Icons.Filled.DeleteOutline
+    StudioToolId.VIDEO_QUALITY -> Icons.Filled.Hd
+    StudioToolId.FADE -> Icons.Filled.Gradient
+    StudioToolId.POSITION -> Icons.Filled.OpenWith
+    StudioToolId.SIZE -> Icons.Filled.PhotoSizeSelectLarge
+    StudioToolId.MIRROR -> Icons.Filled.Flip
+    StudioToolId.FLIP -> Icons.Filled.SwapVert
+    StudioToolId.FIT -> Icons.Filled.FitScreen
     StudioToolId.AUDIO -> Icons.Filled.MusicNote
     StudioToolId.STICKERS -> Icons.Filled.TagFaces
     StudioToolId.FRAMES -> Icons.Filled.CropFree
     StudioToolId.MAGNIFIER -> Icons.Filled.ZoomIn
     StudioToolId.CANVAS -> Icons.Filled.AspectRatio
+    StudioToolId.CROP -> Icons.Filled.Crop
+    StudioToolId.ROTATE -> Icons.Filled.RotateRight
+    StudioToolId.BG_REMOVER -> Icons.Filled.PersonRemove
+    StudioToolId.TRANSITIONS -> Icons.Filled.MovieFilter
     StudioToolId.TEMPLATE -> Icons.Filled.ViewCarousel
     StudioToolId.SKIN_SMOOTH -> Icons.Filled.FaceRetouchingNatural
     StudioToolId.BRIGHTEN -> Icons.Filled.WbSunny
@@ -630,16 +692,22 @@ fun ExportStatusDialog(
                 when (status) {
                     ExportStatus.Idle -> Unit
                     is ExportStatus.Processing -> {
+                        val animatedProgress by animateFloatAsState(
+                            targetValue = status.progress.coerceIn(0f, 1f),
+                            animationSpec = tween(durationMillis = 240),
+                            label = "studio_smooth_progress"
+                        )
                         Icon(
                             imageVector = Icons.Filled.AutoAwesome,
                             contentDescription = null,
-                            tint = AccentTeal,
+                            tint = Color(0xFF8B6EFF),
                             modifier = Modifier.size(36.dp)
                         )
                         Text(
-                            text = "Exporting Creation",
+                            text = status.title,
                             style = MaterialTheme.typography.headlineSmall,
-                            color = TextPrimary
+                            color = TextPrimary,
+                            textAlign = TextAlign.Center
                         )
                         Text(
                             text = status.message,
@@ -648,18 +716,21 @@ fun ExportStatusDialog(
                             textAlign = TextAlign.Center
                         )
                         LinearProgressIndicator(
-                            progress = { status.progress },
+                            progress = { animatedProgress },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(8.dp)
-                                .clip(RoundedCornerShape(999.dp)),
-                            color = SurfaceBright,
+                                .height(10.dp)
+                                .clip(RoundedCornerShape(999.dp))
+                                .testTag("studio_progress_bar"),
+                            color = Color(0xFF8B6EFF),
                             trackColor = SurfacePill
                         )
                         Text(
-                            text = "${(status.progress * 100).toInt()}%",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextMuted
+                            text = "${(animatedProgress * 100).toInt()}%",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary,
+                            modifier = Modifier.testTag("studio_progress_percent")
                         )
                         TextButton(onClick = onCancel) {
                             Text("Cancel", color = TextSecondary)
@@ -673,7 +744,7 @@ fun ExportStatusDialog(
                             modifier = Modifier.size(44.dp)
                         )
                         Text(
-                            text = "Saved to Gallery!",
+                            text = if (status.isAudio) "Audio Saved!" else "Saved to Gallery!",
                             style = MaterialTheme.typography.headlineSmall,
                             color = TextPrimary
                         )
@@ -690,7 +761,11 @@ fun ExportStatusDialog(
                             OutlinedButton(
                                 onClick = {
                                     val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                                        type = if (status.isVideo) "video/mp4" else "image/jpeg"
+                                        type = when {
+                                            status.isAudio -> "audio/wav"
+                                            status.isVideo -> "video/mp4"
+                                            else -> "image/jpeg"
+                                        }
                                         putExtra(Intent.EXTRA_STREAM, status.outputUri)
                                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                     }
@@ -725,7 +800,7 @@ fun ExportStatusDialog(
                             modifier = Modifier.size(40.dp)
                         )
                         Text(
-                            text = "Export Failed",
+                            text = status.title,
                             style = MaterialTheme.typography.headlineSmall,
                             color = TextPrimary
                         )

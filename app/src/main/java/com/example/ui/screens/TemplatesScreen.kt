@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -23,6 +24,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +50,19 @@ fun TemplatesScreen(
     modifier: Modifier = Modifier
 ) {
     val colors = StudioTheme.colors
+    val categories = remember {
+        listOf("All", "Short Reels", "Cinematic", "Portrait", "Festive & Islamic", "Neon", "Film", "HDR")
+    }
+    var selectedCategory by remember { mutableStateOf("All") }
+
+    val filteredTemplates = remember(selectedCategory) {
+        if (selectedCategory == "All") {
+            StudioCatalog.templates
+        } else {
+            StudioCatalog.templates.filter { it.category == selectedCategory }
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -56,24 +74,66 @@ fun TemplatesScreen(
                 .widthIn(max = 600.dp)
                 .fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Studio Templates",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = colors.textPrimary
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = colors.accent.copy(alpha = 0.16f),
+                            border = BorderStroke(1.dp, colors.accent.copy(alpha = 0.5f))
+                        ) {
+                            Text(
+                                text = "${StudioCatalog.templates.size} Offline",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.accent,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
                     Text(
-                        text = "Studio Templates",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = colors.textPrimary
-                    )
-                    Text(
-                        text = "One-tap 4K color grades, retouch & enhancement presets",
+                        text = "100 ready-to-use short templates · Works 100% offline",
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.textMuted
                     )
                 }
             }
 
-            items(StudioCatalog.templates, key = { it.id }) { template ->
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(categories) { category ->
+                        val isSel = category == selectedCategory
+                        Surface(
+                            onClick = { selectedCategory = category },
+                            shape = RoundedCornerShape(999.dp),
+                            color = if (isSel) colors.contrastSurface else colors.cardSecondary,
+                            border = BorderStroke(1.dp, if (isSel) colors.contrastSurface else colors.border),
+                            modifier = Modifier.testTag("template_cat_${category.lowercase().replace(" ", "_")}")
+                        ) {
+                            Text(
+                                text = if (category == "All") "All (${StudioCatalog.templates.size})" else category,
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                color = if (isSel) colors.onContrastSurface else colors.textPrimary,
+                                modifier = Modifier.padding(horizontal = 13.dp, vertical = 7.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            items(filteredTemplates, key = { it.id }) { template ->
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = colors.card,
@@ -86,7 +146,7 @@ fun TemplatesScreen(
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(180.dp)
+                                .height(168.dp)
                         ) {
                             Image(
                                 painter = painterResource(id = template.previewRes),
@@ -103,19 +163,36 @@ fun TemplatesScreen(
                                         )
                                     )
                             )
-                            Box(
+                            Row(
                                 modifier = Modifier
                                     .align(Alignment.TopStart)
-                                    .padding(12.dp)
-                                    .clip(RoundedCornerShape(999.dp))
-                                    .background(BadgeHot)
-                                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text(
-                                    text = template.tag,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = Color.White
-                                )
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(BadgeHot)
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = template.tag,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(Color(0xB3121112))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Text(
+                                        text = "${template.category} · ${template.durationSec}s",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White
+                                    )
+                                }
                             }
                             Column(
                                 modifier = Modifier

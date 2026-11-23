@@ -278,6 +278,17 @@ fun BugtiEditzStudioApp(
         }
     }
 
+    val batchPhotoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 12)
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.runBatchEnhance(
+                uris = uris,
+                mode = uiState.selectedQualityMode
+            )
+        }
+    }
+
     fun openPickerSheet(
         title: String,
         subtitle: String,
@@ -308,8 +319,10 @@ fun BugtiEditzStudioApp(
                 viewModel.selectQualityMode(EnhanceMode.ULTRA_HD)
                 navController.navigate(ROUTE_QUALITY_ENHANCER)
             }
-            StudioToolId.TRENDING -> {
-                viewModel.selectHomeTab(HomeTab.TEMPLATES)
+            StudioToolId.BATCH_ENHANCE -> {
+                batchPhotoPicker.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
             }
             StudioToolId.ALL_TOOLS -> {
                 showAllToolsSheet = true
@@ -512,6 +525,7 @@ fun BugtiEditzStudioApp(
                     segment = uiState.qualitySegment,
                     selectedMode = uiState.selectedQualityMode,
                     splitPosition = uiState.demoSplitPosition,
+                    isOnline = isOnline,
                     onBackClick = { navController.popBackStack() },
                     onSelectSegment = { viewModel.selectQualitySegment(it) },
                     onSelectMode = { viewModel.selectQualityMode(it) },
@@ -528,6 +542,11 @@ fun BugtiEditzStudioApp(
                                 enhanceStrength = mode.defaultStrength
                             )
                         )
+                    },
+                    onBatchEnhanceClick = {
+                        batchPhotoPicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
                     }
                 )
             }
@@ -535,6 +554,7 @@ fun BugtiEditzStudioApp(
             composable(ROUTE_EDITOR) {
                 EditorScreen(
                     uiState = uiState,
+                    preferences = preferences,
                     viewModel = viewModel,
                     onBackClick = { navController.popBackStack() },
                     onAddClipClick = {

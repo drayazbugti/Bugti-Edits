@@ -41,6 +41,7 @@ class StudioRepository(private val context: Context) {
         val LOGGED_IN_EMAIL = stringPreferencesKey("logged_in_email")
         val PROFILE_NAME = stringPreferencesKey("profile_name")
         val PROFILE_PHOTO_PATH = stringPreferencesKey("profile_photo_path")
+        val FAVORITE_FONT_IDS = stringPreferencesKey("favorite_font_ids")
     }
 
     val savedCreationsFlow: Flow<List<SavedCreation>> = context.studioDataStore.data.map { prefs ->
@@ -71,7 +72,12 @@ class StudioRepository(private val context: Context) {
             isLoggedIn = prefs[Keys.IS_LOGGED_IN] ?: false,
             loggedInEmail = prefs[Keys.LOGGED_IN_EMAIL].orEmpty(),
             profileName = prefs[Keys.PROFILE_NAME].orEmpty(),
-            profilePhotoPath = prefs[Keys.PROFILE_PHOTO_PATH].orEmpty()
+            profilePhotoPath = prefs[Keys.PROFILE_PHOTO_PATH].orEmpty(),
+            favoriteFontIds = prefs[Keys.FAVORITE_FONT_IDS]
+                ?.split(",")
+                ?.filter { it.isNotBlank() }
+                ?.toSet()
+                ?: setOf("sacramento", "cinzel_bold", "playfair_display")
         )
     }
 
@@ -168,6 +174,22 @@ class StudioRepository(private val context: Context) {
     suspend fun setThemeMode(mode: AppThemeMode) {
         context.studioDataStore.edit { prefs ->
             prefs[Keys.THEME_MODE] = mode.name
+        }
+    }
+
+    suspend fun toggleFavoriteFont(fontId: String) {
+        context.studioDataStore.edit { prefs ->
+            val current = prefs[Keys.FAVORITE_FONT_IDS]
+                ?.split(",")
+                ?.filter { it.isNotBlank() }
+                ?.toMutableSet()
+                ?: mutableSetOf("sacramento", "cinzel_bold", "playfair_display")
+            if (fontId in current) {
+                current.remove(fontId)
+            } else {
+                current.add(fontId)
+            }
+            prefs[Keys.FAVORITE_FONT_IDS] = current.joinToString(",")
         }
     }
 

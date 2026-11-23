@@ -9,8 +9,12 @@ import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.LinearGradient
+import android.graphics.BlurMaskFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
@@ -21,22 +25,36 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.core.content.res.ResourcesCompat
 import androidx.core.graphics.createBitmap
 import com.example.model.AspectRatioOption
+import com.example.model.BackgroundReplaceMode
 import com.example.model.EffectMode
 import com.example.model.EnhanceMode
 import com.example.model.FilterPreset
 import com.example.model.FrameStyle
+import com.example.model.FxTab
+import com.example.model.MaskShapeType
 import com.example.model.MediaSource
 import com.example.model.OverlayMode
+import com.example.model.StabilizeLevel
+import com.example.model.StudioCatalog
 import com.example.model.StudioEditState
+import com.example.model.StudioFilterSpec
+import com.example.model.TextArtPreset
+import com.example.model.TextBoxStylePreset
+import com.example.model.TrackingTarget
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.random.Random
 
 object ImageEnhancerEngine {
@@ -82,11 +100,32 @@ object ImageEnhancerEngine {
     suspend fun processBitmap(
         source: Bitmap,
         editState: StudioEditState,
-        isExport: Boolean = false
+        isExport: Boolean = false,
+        context: Context? = null,
+        personMask: Bitmap? = null
     ): Bitmap = withContext(Dispatchers.Default) {
         var working = applyGeometryAndCrop(source, editState)
 
-        // Optional upscale during export for 4K / Ultra HD feel
+        // Apply Background Removal (Cutout / Keep Person) if active
+        if (editState.removeBackground) {
+            val maskToUse = personMask ?: BackgroundRemoverEngine.extractPersonMask(source)
+            val alignedMask = applyGeometryAndCrop(maskToUse, editState)
+            working = BackgroundRemoverEngine.applyPersonCutout(
+                source = working,
+                alignedMask = alignedMask,
+                bgMode = editState.bgReplaceMode,
+                feather = editState.bgEdgeFeather
+            )
+            if (alignedMask != maskToUse) alignedMask.recycle()
+            if (personMask == null && maskToUse != working) maskToUse.recycle()
+        }
+
+        // Apply Chroma Key (Green / Blue / Custom color screen removal) if active
+        if (editState.chromaEnabled) {
+            working = applyChromaKey(working, editState)
+        }
+
+        // Optional upscale during export for Ultra HD / AI UHD / 4K
         if (isExport && (editState.enhanceMode == EnhanceMode.ULTRA_HD ||
                 editState.enhanceMode == EnhanceMode.AI_UHD ||
                 editState.enhanceMode == EnhanceMode.ANIME_4K ||
@@ -119,7 +158,7 @@ object ImageEnhancerEngine {
             working = applySoftSkinBlend(working, totalSmooth * 0.55f)
         }
 
-        // 2. ColorMatrix pass: Enhance tonal boost + Filter Preset + Adjust + Retouch Glow/Hair/Makeup
+        // 2. ColorMatrix pass: Enhance tonal boost + Filter Preset + Adjust (inc. Color Balance Warmth/Tint)
         working = applyColorGrading(working, editState)
 
         // 3. Sharpening / Clarity convolution pass
@@ -134,7 +173,7 @@ object ImageEnhancerEngine {
             EnhanceMode.OLD_PHOTO -> 0.60f * editState.enhanceStrength
             EnhanceMode.MOTION_FIX -> 0.90f * editState.enhanceStrength
         }
-        val totalSharpen = (enhanceSharpen + editState.sharpen).coerceIn(0f, 1.35f)
+        val totalSharpen = (enhanceSharpen + editState.sharpen).coerceIn(0f, 1.45f)
         if (totalSharpen > 0.04f) {
             working = applyUnsharpSharpen(working, totalSharpen)
         }
@@ -144,12 +183,17 @@ object ImageEnhancerEngine {
             working = applyMosaicAndRemoval(working, editState)
         }
 
-        // 5. Effects, Overlays, Vignette, Frames
-        working = applyEffectsOverlaysAndFrames(working, editState)
+        // 5. Effects, Overlays (incl. PIP Image Overlay), Vignette, Frames
+        working = applyEffectsOverlaysAndFrames(working, editState, context)
 
-        // 6. Bake Text & Sticker Overlays only on export (live editor renders interactive Compose overlays)
+        // 6. Shape / Linear / Circle Masking
+        if (editState.maskShape != MaskShapeType.NONE) {
+            working = applyShapeMask(working, editState)
+        }
+
+        // 7. Bake Text & Sticker Overlays only on export (live editor renders interactive Compose overlays)
         if (isExport && (editState.textOverlays.isNotEmpty() || editState.stickerOverlays.isNotEmpty())) {
-            working = bakeCreativeOverlays(working, editState)
+            working = bakeCreativeOverlays(working, editState, context)
         }
 
         working
@@ -158,14 +202,19 @@ object ImageEnhancerEngine {
     suspend fun saveBitmapToGallery(
         context: Context,
         bitmap: Bitmap,
-        displayName: String
+        displayName: String,
+        preserveAlpha: Boolean = false
     ): Result<Uri> = withContext(Dispatchers.IO) {
         runCatching {
-            val fileName = "${displayName}_${System.currentTimeMillis()}.jpg"
+            val ext = if (preserveAlpha) "png" else "jpg"
+            val mimeType = if (preserveAlpha) "image/png" else "image/jpeg"
+            val format = if (preserveAlpha) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+            val quality = if (preserveAlpha) 100 else 96
+            val fileName = "${displayName}_${System.currentTimeMillis()}.$ext"
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = ContentValues().apply {
                     put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(MediaStore.Images.Media.MIME_TYPE, mimeType)
                     put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Bugti Editz")
                     put(MediaStore.Images.Media.IS_PENDING, 1)
                 }
@@ -173,7 +222,7 @@ object ImageEnhancerEngine {
                 val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
                     ?: error("Failed to create MediaStore image entry")
                 resolver.openOutputStream(uri)?.use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 96, out)
+                    bitmap.compress(format, quality, out)
                 } ?: error("Failed to open output stream")
                 values.clear()
                 values.put(MediaStore.Images.Media.IS_PENDING, 0)
@@ -185,7 +234,7 @@ object ImageEnhancerEngine {
                 val outDir = File(picturesDir, "Bugti Editz").apply { mkdirs() }
                 val outFile = File(outDir, fileName)
                 FileOutputStream(outFile).use { out ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 96, out)
+                    bitmap.compress(format, quality, out)
                 }
                 Uri.fromFile(outFile)
             }
@@ -193,41 +242,115 @@ object ImageEnhancerEngine {
     }
 
     private fun applyGeometryAndCrop(src: Bitmap, state: StudioEditState): Bitmap {
-        val matrix = Matrix()
-        if (state.flipHorizontal) {
-            matrix.postScale(-1f, 1f)
-        }
-        if (state.bodyBalance != 0f) {
-            // Subtle horizontal/vertical proportion adjustment
-            val scaleX = (1f - state.bodyBalance * 0.12f).coerceIn(0.85f, 1.15f)
-            matrix.postScale(scaleX, 1f)
-        }
-        if (state.rotationDegrees != 0) {
-            matrix.postRotate(state.rotationDegrees.toFloat())
+        var working = src
+
+        // Apply deterministic horizontal/vertical flip on pixel buffer
+        if (state.flipHorizontal || state.flipVertical) {
+            val w = working.width
+            val h = working.height
+            val srcPixels = IntArray(w * h)
+            val outPixels = IntArray(w * h)
+            working.getPixels(srcPixels, 0, w, 0, 0, w, h)
+            val fh = state.flipHorizontal
+            val fv = state.flipVertical
+            for (y in 0 until h) {
+                val dstY = if (fv) (h - 1 - y) else y
+                val srcRow = y * w
+                val dstRow = dstY * w
+                if (!fh) {
+                    System.arraycopy(srcPixels, srcRow, outPixels, dstRow, w)
+                } else {
+                    for (x in 0 until w) {
+                        outPixels[dstRow + (w - 1 - x)] = srcPixels[srcRow + x]
+                    }
+                }
+            }
+            working = createBitmap(w, h, Bitmap.Config.ARGB_8888).apply {
+                setPixels(outPixels, 0, w, 0, 0, w, h)
+            }
         }
 
-        val transformed = if (!matrix.isIdentity) {
-            Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
-        } else {
-            src
+        // Apply rotation & straighten via Matrix
+        val totalRotation = state.rotationDegrees.toFloat() + state.straightenDegrees
+        if (totalRotation != 0f) {
+            val rotMatrix = Matrix().apply { postRotate(totalRotation) }
+            working = Bitmap.createBitmap(working, 0, 0, working.width, working.height, rotMatrix, true)
         }
 
-        val targetRatio = state.aspectRatio.ratio ?: return transformed
-        val curRatio = transformed.width.toFloat() / transformed.height.toFloat()
-        if (kotlin.math.abs(curRatio - targetRatio) < 0.01f) return transformed
+        // Apply Size (clipScaleX/Y) & Body proportion scale
+        val customScaleX = state.clipScaleX.coerceIn(0.35f, 2.5f)
+        val customScaleY = state.clipScaleY.coerceIn(0.35f, 2.5f)
+        val bodyScaleX = if (state.bodyBalance != 0f) {
+            (1f - state.bodyBalance * 0.12f).coerceIn(0.85f, 1.15f)
+        } else 1f
+        val finalScaleX = customScaleX * bodyScaleX
+        if (abs(finalScaleX - 1f) > 0.02f || abs(customScaleY - 1f) > 0.02f) {
+            val targetW = (working.width * finalScaleX).roundToInt().coerceAtLeast(8)
+            val targetH = (working.height * customScaleY).roundToInt().coerceAtLeast(8)
+            working = Bitmap.createScaledBitmap(working, targetW, targetH, true)
+        }
+
+        // Apply Freeform Crop rectangle if modified
+        if (!state.freeformCrop.isFull) {
+            val l = (state.freeformCrop.left.coerceIn(0f, 0.85f) * working.width).roundToInt()
+            val t = (state.freeformCrop.top.coerceIn(0f, 0.85f) * working.height).roundToInt()
+            val r = (state.freeformCrop.right.coerceIn(state.freeformCrop.left + 0.1f, 1f) * working.width).roundToInt()
+            val b = (state.freeformCrop.bottom.coerceIn(state.freeformCrop.top + 0.1f, 1f) * working.height).roundToInt()
+            val cw = (r - l).coerceIn(1, working.width - l)
+            val ch = (b - t).coerceIn(1, working.height - t)
+            if (cw > 2 && ch > 2) {
+                working = Bitmap.createBitmap(working, l, t, cw, ch)
+            }
+        }
+
+        // Stabilize safety margin crop (eliminates edge shake/black borders)
+        if (state.stabilizeLevel != StabilizeLevel.OFF) {
+            val m = state.stabilizeLevel.cropMargin.coerceIn(0f, 0.22f)
+            val l = (working.width * m).roundToInt()
+            val t = (working.height * m).roundToInt()
+            val cw = (working.width - l * 2).coerceAtLeast(8)
+            val ch = (working.height - t * 2).coerceAtLeast(8)
+            if (cw < working.width && ch < working.height) {
+                working = Bitmap.createBitmap(working, l, t, cw, ch)
+            }
+        }
+
+        // Camera Tracking focus lock crop around tracked subject/anchor
+        if (state.cameraTrackingEnabled && state.cameraTrackingStrength > 0.05f) {
+            val zoomFrac = (1f - 0.22f * state.cameraTrackingStrength).coerceIn(0.72f, 0.98f)
+            val cropW = (working.width * zoomFrac).roundToInt().coerceAtLeast(8)
+            val cropH = (working.height * zoomFrac).roundToInt().coerceAtLeast(8)
+            val ax = when (state.cameraTrackingTarget) {
+                TrackingTarget.FACE -> 0.5f
+                TrackingTarget.SUBJECT -> 0.5f
+                TrackingTarget.MOTION_POINT -> state.trackingAnchorX.coerceIn(0.1f, 0.9f)
+            }
+            val ay = when (state.cameraTrackingTarget) {
+                TrackingTarget.FACE -> 0.36f
+                TrackingTarget.SUBJECT -> 0.5f
+                TrackingTarget.MOTION_POINT -> state.trackingAnchorY.coerceIn(0.1f, 0.9f)
+            }
+            val left = (ax * working.width - cropW / 2f).roundToInt().coerceIn(0, working.width - cropW)
+            val top = (ay * working.height - cropH / 2f).roundToInt().coerceAtLeast(0).coerceAtMost(working.height - cropH)
+            working = Bitmap.createBitmap(working, left, top, cropW, cropH)
+        }
+
+        val targetRatio = state.aspectRatio.ratio ?: return working
+        val curRatio = working.width.toFloat() / working.height.toFloat()
+        if (kotlin.math.abs(curRatio - targetRatio) < 0.01f) return working
 
         val cropW: Int
         val cropH: Int
         if (curRatio > targetRatio) {
-            cropH = transformed.height
-            cropW = (cropH * targetRatio).roundToInt().coerceIn(1, transformed.width)
+            cropH = working.height
+            cropW = (cropH * targetRatio).roundToInt().coerceIn(1, working.width)
         } else {
-            cropW = transformed.width
-            cropH = (cropW / targetRatio).roundToInt().coerceIn(1, transformed.height)
+            cropW = working.width
+            cropH = (cropW / targetRatio).roundToInt().coerceIn(1, working.height)
         }
-        val left = ((transformed.width - cropW) / 2).coerceAtLeast(0)
-        val top = ((transformed.height - cropH) / 2).coerceAtLeast(0)
-        return Bitmap.createBitmap(transformed, left, top, cropW, cropH)
+        val left = ((working.width - cropW) / 2).coerceAtLeast(0)
+        val top = ((working.height - cropH) / 2).coerceAtLeast(0)
+        return Bitmap.createBitmap(working, left, top, cropW, cropH)
     }
 
     private fun applyColorGrading(src: Bitmap, state: StudioEditState): Bitmap {
@@ -263,22 +386,38 @@ object ImageEnhancerEngine {
             else -> 0f
         }
 
+        val filterSpec: StudioFilterSpec? = StudioCatalog.filterPresetsCatalog.firstOrNull {
+            it.id == state.filterSpecId
+        }
+        val fi = if (state.filterPreset != FilterPreset.NATURAL || (filterSpec != null && filterSpec.id != "natural")) {
+            state.filterIntensity.coerceIn(0f, 1f)
+        } else 0f
+
         // Total brightness (-128..128), contrast (0.5..1.8), saturation (0..2)
-        val totalBrightness = (state.brightness + enhBright + state.faceGlow * 0.12f) * 255f * 0.5f
-        val totalContrast = (1f + state.contrast + enhContrast + state.hairGloss * 0.15f).coerceIn(0.4f, 2.0f)
-        val totalSat = (1f + state.saturation + enhSat + state.makeupTint * 0.22f).coerceIn(0f, 2.2f)
+        val specBright = (filterSpec?.brightBoost ?: 0f) * fi
+        val specContrast = (filterSpec?.contrastBoost ?: 0f) * fi
+        val specSat = (filterSpec?.satBoost ?: 0f) * fi
+        val specWarmth = (filterSpec?.warmthBoost ?: 0f) * fi
+        val specTint = (filterSpec?.tintBoost ?: 0f) * fi
+
+        val totalBrightness = (state.brightness + specBright + enhBright + state.faceGlow * 0.12f) * 255f * 0.5f
+        val totalContrast = (1f + state.contrast + specContrast + enhContrast + state.hairGloss * 0.15f).coerceIn(0.4f, 2.0f)
+        val totalSat = (1f + state.saturation + specSat + enhSat + state.makeupTint * 0.22f).coerceIn(0f, 2.2f)
 
         val satMatrix = ColorMatrix().apply { setSaturation(totalSat) }
         cm.postConcat(satMatrix)
 
         val scale = totalContrast
         val translate = (-0.5f * scale + 0.5f) * 255f + totalBrightness
-        val warmthRed = state.warmth * 36f + state.makeupTint * 12f
-        val warmthBlue = -state.warmth * 36f
+        val effectiveWarmth = state.warmth + specWarmth
+        val effectiveTint = state.tint + specTint
+        val warmthRed = effectiveWarmth * 36f + effectiveTint * 18f + state.makeupTint * 12f
+        val warmthGreen = -effectiveTint * 34f
+        val warmthBlue = -effectiveWarmth * 36f + effectiveTint * 18f
         val adjustMatrix = ColorMatrix(
             floatArrayOf(
                 scale, 0f, 0f, 0f, translate + warmthRed,
-                0f, scale, 0f, 0f, translate,
+                0f, scale, 0f, 0f, translate + warmthGreen,
                 0f, 0f, scale, 0f, translate + warmthBlue,
                 0f, 0f, 0f, 1f, 0f
             )
@@ -466,14 +605,14 @@ object ImageEnhancerEngine {
             val tiny = Bitmap.createScaledBitmap(src, max(6, src.width / 10), max(6, src.height / 10), true)
             val healed = Bitmap.createScaledBitmap(tiny, src.width, src.height, true)
             tiny.recycle()
-            val radius = max(20f, min(w, h) * 0.05f)
+            val radius = max(16f, min(w, h) * state.removalBrushSize.coerceIn(0.025f, 0.14f))
             val paint = Paint(Paint.ANTI_ALIAS_FLAG)
             state.removalPoints.forEach { pt ->
                 val cx = pt.x * w
                 val cy = pt.y * h
                 canvas.save()
                 val rect = RectF(cx - radius, cy - radius, cx + radius, cy + radius)
-                val path = android.graphics.Path().apply { addOval(rect, android.graphics.Path.Direction.CW) }
+                val path = Path().apply { addOval(rect, Path.Direction.CW) }
                 canvas.clipPath(path)
                 canvas.drawBitmap(healed, 0f, 0f, paint)
                 canvas.restore()
@@ -483,27 +622,237 @@ object ImageEnhancerEngine {
         return out
     }
 
-    private fun applyEffectsOverlaysAndFrames(src: Bitmap, state: StudioEditState): Bitmap {
+    /**
+     * Real Chroma Keyer: removes target green/blue/custom screen color with smooth edge spill feathering.
+     */
+    fun applyChromaKey(src: Bitmap, state: StudioEditState): Bitmap {
+        val w = src.width
+        val h = src.height
+        val total = w * h
+        val pixels = IntArray(total)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val keyColor = state.chromaKeyColorHex.toInt()
+        val kr = (keyColor ushr 16) and 0xFF
+        val kg = (keyColor ushr 8) and 0xFF
+        val kb = keyColor and 0xFF
+
+        val maxDist = (state.chromaSimilarity.coerceIn(0.05f, 0.85f) * 441.67f)
+        val featherSpan = (state.chromaSmoothness.coerceIn(0.01f, 0.5f) * 160f)
+
+        val outPixels = IntArray(total)
+        for (i in 0 until total) {
+            val p = pixels[i]
+            val a = (p ushr 24) and 0xFF
+            val r = (p ushr 16) and 0xFF
+            val g = (p ushr 8) and 0xFF
+            val b = p and 0xFF
+
+            val dr = (r - kr).toFloat()
+            val dg = (g - kg).toFloat()
+            val db = (b - kb).toFloat()
+            val dist = sqrt(dr * dr + dg * dg + db * db)
+
+            val maskFrac = when {
+                dist <= maxDist -> 0f
+                dist >= maxDist + featherSpan -> 1f
+                else -> (dist - maxDist) / featherSpan
+            }
+            val newA = (a * maskFrac).roundToInt().coerceIn(0, 255)
+            outPixels[i] = (newA shl 24) or (r shl 16) or (g shl 8) or b
+        }
+
+        val keyed = createBitmap(w, h, Bitmap.Config.ARGB_8888).apply {
+            setPixels(outPixels, 0, w, 0, 0, w, h)
+        }
+        if (state.bgReplaceMode == BackgroundReplaceMode.TRANSPARENT) {
+            return keyed
+        }
+        return BackgroundRemoverEngine.applyPersonCutout(
+            source = keyed,
+            alignedMask = keyed,
+            bgMode = state.bgReplaceMode,
+            feather = state.bgEdgeFeather
+        )
+    }
+
+    /**
+     * Interactive Shape / Linear / Circle / Heart / Star / Mirror Masking with Feather & Invert.
+     */
+    fun applyShapeMask(src: Bitmap, state: StudioEditState): Bitmap {
+        if (state.maskShape == MaskShapeType.NONE) return src
+        val w = src.width
+        val h = src.height
+        val total = w * h
+        val srcPixels = IntArray(total)
+        src.getPixels(srcPixels, 0, w, 0, 0, w, h)
+
+        val cx = state.maskCenterX.coerceIn(0.05f, 0.95f) * w
+        val cy = state.maskCenterY.coerceIn(0.05f, 0.95f) * h
+        val minDim = min(w, h).toFloat()
+        val halfSize = (minDim * 0.5f * state.maskScale.coerceIn(0.15f, 1.35f)).coerceAtLeast(12f)
+        val featherPx = max(1.5f, minDim * 0.18f * state.maskFeather.coerceIn(0f, 1f))
+        val rad = -Math.toRadians(state.maskRotation.toDouble())
+        val cosR = cos(rad).toFloat()
+        val sinR = sin(rad).toFloat()
+        val invert = state.maskInvert
+
+        val sinPi5 = sin(Math.PI / 5.0).toFloat()
+        val cosPi5 = cos(Math.PI / 5.0).toFloat()
+        val sectorStep = (2.0 * Math.PI / 5.0).toFloat()
+        val innerStarR = halfSize * 0.44f
+
+        val outPixels = IntArray(total)
+        var idx = 0
+        for (y in 0 until h) {
+            val py = y - cy
+            for (x in 0 until w) {
+                val px = x - cx
+                val dx = cosR * px - sinR * py
+                val dy = sinR * px + cosR * py
+
+                val sd: Float = when (state.maskShape) {
+                    MaskShapeType.NONE -> -featherPx
+                    MaskShapeType.CIRCLE -> sqrt(dx * dx + dy * dy) - halfSize
+                    MaskShapeType.RECTANGLE -> {
+                        val rx = halfSize * 1.15f
+                        val ry = halfSize * 0.85f
+                        val cr = halfSize * 0.18f
+                        val qx = kotlin.math.abs(dx) - (rx - cr)
+                        val qy = kotlin.math.abs(dy) - (ry - cr)
+                        sqrt(max(qx, 0f) * max(qx, 0f) + max(qy, 0f) * max(qy, 0f)) +
+                            min(max(qx, qy), 0f) - cr
+                    }
+                    MaskShapeType.LINEAR -> dy
+                    MaskShapeType.MIRROR -> kotlin.math.abs(dy) - halfSize * 0.55f
+                    MaskShapeType.HEART -> {
+                        val nx = dx / (halfSize * 0.92f)
+                        val ny = -(dy - halfSize * 0.12f) / (halfSize * 0.92f)
+                        val a = nx * nx + ny * ny - 1f
+                        val f = a * a * a - (nx * nx) * (ny * ny * ny)
+                        f * halfSize * 0.45f
+                    }
+                    MaskShapeType.STAR -> {
+                        val angle = (kotlin.math.atan2(dy, dx) + (Math.PI / 2.0).toFloat() + (2.0 * Math.PI).toFloat()) % sectorStep
+                        val a = kotlin.math.abs(angle - sectorStep * 0.5f - (-sectorStep * 0.5f)).let { raw ->
+                            val centered = ((angle % sectorStep) + sectorStep) % sectorStep
+                            kotlin.math.abs(if (centered > sectorStep * 0.5f) centered - sectorStep else centered)
+                        }
+                        val denom = (innerStarR * cos(a) * sinPi5 + (halfSize - innerStarR * cosPi5) * sin(a))
+                            .coerceAtLeast(1e-4f)
+                        val rMax = (halfSize * innerStarR * sinPi5) / denom
+                        sqrt(dx * dx + dy * dy) - rMax
+                    }
+                }
+
+                var maskAlpha = when {
+                    sd <= -featherPx * 0.5f -> 1f
+                    sd >= featherPx * 0.5f -> 0f
+                    else -> {
+                        val t = 1f - (sd + featherPx * 0.5f) / featherPx
+                        t * t * (3f - 2f * t)
+                    }
+                }
+                if (invert) maskAlpha = 1f - maskAlpha
+
+                val sp = srcPixels[idx]
+                val srcA = (sp ushr 24) and 0xFF
+                val finalA = (srcA * maskAlpha).roundToInt().coerceIn(0, 255)
+                outPixels[idx] = (finalA shl 24) or (sp and 0x00FFFFFF)
+                idx++
+            }
+        }
+        return createBitmap(w, h, Bitmap.Config.ARGB_8888).apply {
+            setPixels(outPixels, 0, w, 0, 0, w, h)
+        }
+    }
+
+    private fun applyEffectsOverlaysAndFrames(
+        src: Bitmap,
+        state: StudioEditState,
+        context: Context? = null
+    ): Bitmap {
+        val hasFxPreset = state.fxEffectId != "fx_none" && state.fxEffectId != "fx_body_none"
         val needsFx = state.effectMode != EffectMode.NONE ||
+            hasFxPreset ||
             state.overlayMode != OverlayMode.NONE ||
+            !state.overlayImageUriString.isNullOrBlank() ||
             state.vignette > 0.02f ||
             state.frameStyle != FrameStyle.NONE
         if (!needsFx) return src
 
         var working = src.copy(Bitmap.Config.ARGB_8888, true)
 
-        if (state.effectMode == EffectMode.SOFT_FOCUS || state.effectMode == EffectMode.GLOW_BLOOM) {
-            working = applySoftSkinBlend(working, state.effectIntensity * 0.45f)
+        if (state.effectMode == EffectMode.SOFT_FOCUS || state.effectMode == EffectMode.GLOW_BLOOM ||
+            state.fxEffectId.startsWith("fx_blur_") || state.fxEffectId.startsWith("fx_glow_")
+        ) {
+            val blurFrac = if (state.fxEffectId.startsWith("fx_blur_") || state.fxEffectId.startsWith("fx_glow_")) {
+                state.fxIntensity * 0.5f
+            } else {
+                state.effectIntensity * 0.45f
+            }
+            working = applySoftSkinBlend(working, blurFrac)
         }
 
         val canvas = Canvas(working)
         val w = working.width.toFloat()
         val h = working.height.toFloat()
 
+        // FX Effects Picker Export / Preview rendering
+        if (hasFxPreset) {
+            val fxSpec = StudioCatalog.fxEffects.firstOrNull { it.id == state.fxEffectId }
+            val accent = fxSpec?.accentArgb?.toInt() ?: Color.MAGENTA
+            val fxi = state.fxIntensity.coerceIn(0.15f, 1f)
+            when {
+                state.fxEffectId.startsWith("fx_rgb_") || state.fxEffectId.startsWith("fx_glitch_") -> {
+                    val shiftPx = (w * 0.018f * fxi).coerceAtLeast(3f)
+                    val ghostPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        alpha = (85 * fxi).roundToInt().coerceIn(25, 110)
+                    }
+                    canvas.drawBitmap(working, shiftPx, 0f, ghostPaint)
+                    val scanPaint = Paint().apply {
+                        color = Color.argb((65 * fxi).roundToInt(), Color.red(accent), Color.green(accent), Color.blue(accent))
+                    }
+                    var row = 0f
+                    while (row < h) {
+                        canvas.drawRect(0f, row, w, row + max(2f, h * 0.008f), scanPaint)
+                        row += max(12f, h * 0.06f)
+                    }
+                }
+                fxSpec?.tab == FxTab.BODY -> {
+                    val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        shader = RadialGradient(
+                            w * 0.5f, h * 0.45f, max(w, h) * 0.55f,
+                            intArrayOf(
+                                Color.TRANSPARENT,
+                                Color.argb((120 * fxi).roundToInt(), Color.red(accent), Color.green(accent), Color.blue(accent)),
+                                Color.TRANSPARENT
+                            ),
+                            floatArrayOf(0.28f, 0.62f, 1f),
+                            Shader.TileMode.CLAMP
+                        )
+                    }
+                    canvas.drawRect(0f, 0f, w, h, haloPaint)
+                }
+                else -> {
+                    val tintOverlay = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        shader = LinearGradient(
+                            0f, 0f, w, h,
+                            Color.argb((65 * fxi).roundToInt(), Color.red(accent), Color.green(accent), Color.blue(accent)),
+                            Color.TRANSPARENT,
+                            Shader.TileMode.CLAMP
+                        )
+                    }
+                    canvas.drawRect(0f, 0f, w, h, tintOverlay)
+                }
+            }
+        }
+
         // Film grain or haze
-        if (state.effectMode == EffectMode.FILM_GRAIN) {
+        if (state.effectMode == EffectMode.FILM_GRAIN || state.fxEffectId.startsWith("fx_retro_")) {
+            val strength = if (state.fxEffectId.startsWith("fx_retro_")) state.fxIntensity else state.effectIntensity
             val grainPaint = Paint().apply {
-                alpha = (state.effectIntensity * 45).roundToInt().coerceIn(8, 55)
+                alpha = (strength * 45).roundToInt().coerceIn(8, 55)
             }
             val rng = Random(42)
             val step = max(3, (min(w, h) / 180f).roundToInt())
@@ -560,6 +909,30 @@ object ImageEnhancerEngine {
             }
         }
 
+        // Custom Picture-in-Picture Photo Overlay
+        val pipUriStr = state.overlayImageUriString
+        if (!pipUriStr.isNullOrBlank() && context != null) {
+            runCatching {
+                val pipUri = Uri.parse(pipUriStr)
+                val pipBmp = context.contentResolver.openInputStream(pipUri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream)
+                }
+                if (pipBmp != null) {
+                    val targetW = (w * 0.42f).roundToInt().coerceAtLeast(24)
+                    val targetH = ((pipBmp.height.toFloat() / max(1, pipBmp.width)) * targetW).roundToInt().coerceAtLeast(24)
+                    val scaledPip = Bitmap.createScaledBitmap(pipBmp, targetW, targetH, true)
+                    val left = (w - targetW) * 0.5f
+                    val top = (h - targetH) * 0.5f
+                    val pipPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        alpha = (state.overlayImageOpacity.coerceIn(0.05f, 1f) * 255f).roundToInt()
+                    }
+                    canvas.drawBitmap(scaledPip, left, top, pipPaint)
+                    if (scaledPip != pipBmp) scaledPip.recycle()
+                    pipBmp.recycle()
+                }
+            }
+        }
+
         // Vignette
         if (state.vignette > 0.02f) {
             val radius = max(w, h) * 0.75f
@@ -612,7 +985,7 @@ object ImageEnhancerEngine {
         return working
     }
 
-    private fun bakeCreativeOverlays(src: Bitmap, state: StudioEditState): Bitmap {
+    private fun bakeCreativeOverlays(src: Bitmap, state: StudioEditState, context: Context?): Bitmap {
         val out = src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(out)
         val w = out.width.toFloat()
@@ -622,13 +995,81 @@ object ImageEnhancerEngine {
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = Paint.Align.CENTER
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            setShadowLayer(8f, 0f, 3f, Color.argb(170, 0, 0, 0))
+        }
+        val boxBgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+        val boxStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = max(2f, baseSize * 0.08f)
         }
 
         state.textOverlays.forEach { item ->
-            textPaint.color = item.colorArgb.toInt()
+            val fontSpec = StudioCatalog.studioFonts.firstOrNull { it.id == item.fontId }
+            val loadedTypeface = if (context != null && fontSpec != null) {
+                runCatching { ResourcesCompat.getFont(context, fontSpec.fontRes) }.getOrNull()
+            } else null
+            textPaint.typeface = loadedTypeface ?: Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             textPaint.textSize = baseSize * item.scale
-            canvas.drawText(item.text, item.normX * w, item.normY * h, textPaint)
+
+            val effectiveColor = if (item.artPreset != TextArtPreset.NONE) {
+                item.artPreset.accentArgb.toInt()
+            } else {
+                item.colorArgb.toInt()
+            }
+            textPaint.color = effectiveColor
+
+            if (item.stylePreset == TextBoxStylePreset.SHADOW_GLOW || item.artPreset != TextArtPreset.NONE) {
+                val glowColor = if (item.artPreset != TextArtPreset.NONE) {
+                    item.artPreset.accentArgb.toInt()
+                } else Color.argb(190, 0, 0, 0)
+                textPaint.setShadowLayer(baseSize * 0.28f, 0f, baseSize * 0.07f, glowColor)
+            } else {
+                textPaint.clearShadowLayer()
+            }
+
+            val cx = item.normX * w
+            val cy = item.normY * h
+            val bounds = Rect()
+            textPaint.getTextBounds(item.text, 0, item.text.length, bounds)
+            val padX = baseSize * 0.5f * item.scale
+            val padY = baseSize * 0.32f * item.scale
+
+            canvas.save()
+            canvas.rotate(item.rotationDeg, cx, cy)
+            when (item.stylePreset) {
+                TextBoxStylePreset.SOLID_PILL -> {
+                    boxBgPaint.color = Color.argb(230, 18, 18, 24)
+                    val rect = RectF(
+                        cx - bounds.width() / 2f - padX,
+                        cy - bounds.height() / 2f - padY,
+                        cx + bounds.width() / 2f + padX,
+                        cy + bounds.height() / 2f + padY
+                    )
+                    canvas.drawRoundRect(rect, rect.height() / 2f, rect.height() / 2f, boxBgPaint)
+                }
+                TextBoxStylePreset.FROST_CARD -> {
+                    boxBgPaint.color = Color.argb(145, 255, 255, 255)
+                    val rect = RectF(
+                        cx - bounds.width() / 2f - padX,
+                        cy - bounds.height() / 2f - padY,
+                        cx + bounds.width() / 2f + padX,
+                        cy + bounds.height() / 2f + padY
+                    )
+                    canvas.drawRoundRect(rect, baseSize * 0.28f, baseSize * 0.28f, boxBgPaint)
+                }
+                TextBoxStylePreset.OUTLINE_BADGE -> {
+                    boxStrokePaint.color = effectiveColor
+                    val rect = RectF(
+                        cx - bounds.width() / 2f - padX,
+                        cy - bounds.height() / 2f - padY,
+                        cx + bounds.width() / 2f + padX,
+                        cy + bounds.height() / 2f + padY
+                    )
+                    canvas.drawRoundRect(rect, baseSize * 0.24f, baseSize * 0.24f, boxStrokePaint)
+                }
+                else -> Unit
+            }
+            canvas.drawText(item.text, cx, cy + bounds.height() / 2f, textPaint)
+            canvas.restore()
         }
 
         val badgeBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -646,23 +1087,35 @@ object ImageEnhancerEngine {
         }
 
         state.stickerOverlays.forEach { sticker ->
-            stickerTextPaint.textSize = baseSize * 0.72f * sticker.scale
-            val bounds = Rect()
-            stickerTextPaint.getTextBounds(sticker.label, 0, sticker.label.length, bounds)
             val cx = sticker.normX * w
             val cy = sticker.normY * h
-            val padX = baseSize * 0.6f
-            val padY = baseSize * 0.38f
-            val pill = RectF(
-                cx - bounds.width() / 2f - padX,
-                cy - bounds.height() / 2f - padY,
-                cx + bounds.width() / 2f + padX,
-                cy + bounds.height() / 2f + padY
-            )
-            val corner = pill.height() / 2f
-            canvas.drawRoundRect(pill, corner, corner, badgeBgPaint)
-            canvas.drawRoundRect(pill, corner, corner, badgeBorderPaint)
-            canvas.drawText(sticker.label, cx, cy + bounds.height() / 2f, stickerTextPaint)
+            canvas.save()
+            canvas.rotate(sticker.rotationDeg, cx, cy)
+            if (sticker.isBadge) {
+                stickerTextPaint.textSize = baseSize * 0.72f * sticker.scale
+                stickerTextPaint.clearShadowLayer()
+                val bounds = Rect()
+                stickerTextPaint.getTextBounds(sticker.label, 0, sticker.label.length, bounds)
+                val padX = baseSize * 0.6f * sticker.scale
+                val padY = baseSize * 0.38f * sticker.scale
+                val pill = RectF(
+                    cx - bounds.width() / 2f - padX,
+                    cy - bounds.height() / 2f - padY,
+                    cx + bounds.width() / 2f + padX,
+                    cy + bounds.height() / 2f + padY
+                )
+                val corner = pill.height() / 2f
+                canvas.drawRoundRect(pill, corner, corner, badgeBgPaint)
+                canvas.drawRoundRect(pill, corner, corner, badgeBorderPaint)
+                canvas.drawText(sticker.label, cx, cy + bounds.height() / 2f, stickerTextPaint)
+            } else {
+                stickerTextPaint.textSize = baseSize * 1.45f * sticker.scale
+                stickerTextPaint.setShadowLayer(baseSize * 0.22f, 0f, baseSize * 0.06f, Color.argb(160, 0, 0, 0))
+                val metrics = stickerTextPaint.fontMetrics
+                val baseline = cy - (metrics.ascent + metrics.descent) / 2f
+                canvas.drawText(sticker.label, cx, baseline, stickerTextPaint)
+            }
+            canvas.restore()
         }
 
         return out
