@@ -1,3 +1,5 @@
-# Bugti Editz — APK Download
+# Bugti Editz — Latest APK Download
 
-[Download Bugti Editz APK](./Bugti-Editz.apk?raw=true)
+[Download Bugti Editz Latest APK](https://github.com/drayazbugti/Bugti-Edits/releases/latest/download/Bugti-Editz.apk)
+
+[View APK Build Progress (Actions)](https://github.com/drayazbugti/Bugti-Edits/actions)
