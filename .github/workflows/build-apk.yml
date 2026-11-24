@@ -32,22 +32,46 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Set up Gradle
+      - name: Accept Android SDK licenses and install SDK 36.1
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          SDKMGR="$(command -v sdkmanager || find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)"
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+            "$SDKMGR" --sdk_root="$SDK_ROOT" --install "platform-tools" "build-tools;36.0.0" "platforms;android-36.1" >/dev/null || \
+            "$SDKMGR" --sdk_root="$SDK_ROOT" --install "platform-tools" "build-tools;36.0.0" "platforms;android-36" >/dev/null || true
+          fi
+
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
-      - name: Decode debug keystore
+      - name: Ensure debug keystore exists
         run: |
-          if [ ! -f debug.keystore ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+          if [ ! -s debug.keystore ]; then
+            if [ -s debug.keystore.base64 ]; then
+              base64 -di debug.keystore.base64 > debug.keystore || rm -f debug.keystore
+            fi
+            if [ ! -s debug.keystore ]; then
+              keytool -genkeypair -noprompt -keystore debug.keystore \
+                -storepass android -alias androiddebugkey -keypass android \
+                -keyalg RSA -keysize 2048 -validity 10000 \
+                -dname "CN=Android Debug,O=Android,C=US"
+            fi
           fi
 
       - name: Build BUGTI EDITZ APK
-        run: gradle :app:assembleDebug --no-daemon --no-configuration-cache
-
-      - name: Prepare APK asset
         run: |
+          gradle :app:assembleDebug \
+            --no-daemon \
+            --no-configuration-cache \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" \
+            -Dorg.gradle.workers.max=2
+
+      - name: Verify and prepare APK asset
+        run: |
+          test -s app/build/outputs/apk/debug/app-debug.apk
           cp app/build/outputs/apk/debug/app-debug.apk Bugti-Editz.apk
           ls -lh Bugti-Editz.apk
 
@@ -62,24 +86,27 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
           RELEASE_NOTES="Automated BUGTI EDITZ build from commit ${GITHUB_SHA} (Run #${GITHUB_RUN_NUMBER}). Direct Latest APK: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/Bugti-Editz.apk"
 
           if gh release view latest >/dev/null 2>&1; then
-            git push -f origin "${{ github.sha }}:refs/tags/latest" || true
+            if ! gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/latest" -f sha="${GITHUB_SHA}" -F force=true >/dev/null 2>&1; then
+              echo "::error::Failed to update 'latest' tag. Ensure Settings -> Actions -> General -> Workflow permissions is set to 'Read and write permissions'."
+              exit 1
+            fi
             gh release upload latest Bugti-Editz.apk --clobber
             gh release edit latest \
               --title "BUGTI EDITZ — Latest APK" \
               --notes "$RELEASE_NOTES" \
               --latest
           else
-            gh release create latest Bugti-Editz.apk \
-              --target "${{ github.sha }}" \
+            if ! gh release create latest Bugti-Editz.apk \
+              --target "${GITHUB_SHA}" \
               --title "BUGTI EDITZ — Latest APK" \
               --notes "$RELEASE_NOTES" \
-              --latest
+              --latest; then
+              echo "::error::Failed to create GitHub Release. Ensure Settings -> Actions -> General -> Workflow permissions is set to 'Read and write permissions'."
+              exit 1
+            fi
           fi
 
   unit-tests:
@@ -99,10 +126,25 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Set up Gradle
+      - name: Accept Android SDK licenses and install SDK 36.1
+        run: |
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          SDKMGR="$(command -v sdkmanager || find "$SDK_ROOT/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -n 1 || true)"
+          if [ -n "$SDKMGR" ]; then
+            yes | "$SDKMGR" --sdk_root="$SDK_ROOT" --licenses >/dev/null 2>&1 || true
+            "$SDKMGR" --sdk_root="$SDK_ROOT" --install "platform-tools" "build-tools;36.0.0" "platforms;android-36.1" >/dev/null || \
+            "$SDKMGR" --sdk_root="$SDK_ROOT" --install "platform-tools" "build-tools;36.0.0" "platforms;android-36" >/dev/null || true
+          fi
+
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
 
       - name: Run unit tests
-        run: gradle :app:testDebugUnitTest --no-daemon --no-configuration-cache
+        run: |
+          gradle :app:testDebugUnitTest \
+            --no-daemon \
+            --no-configuration-cache \
+            -Dorg.gradle.jvmargs="-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8" \
+            -Dorg.gradle.workers.max=2
