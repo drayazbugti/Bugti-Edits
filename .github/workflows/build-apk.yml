@@ -1,4 +1,4 @@
-name: Build & Publish Bugti Editz APK
+name: Build & Publish BUGTI EDITZ APK
 
 on:
   push:
@@ -10,8 +10,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: bugti-editz-latest-release
+  cancel-in-progress: false
+
 jobs:
-  build-apk:
+  build-and-release:
+    name: Build & Publish Latest APK
     runs-on: ubuntu-latest
 
     steps:
@@ -38,19 +43,45 @@ jobs:
             base64 -d debug.keystore.base64 > debug.keystore
           fi
 
-      - name: Build Debug APK
+      - name: Run unit tests
+        run: gradle :app:testDebugUnitTest --no-daemon --no-configuration-cache
+
+      - name: Build BUGTI EDITZ APK
         run: gradle :app:assembleDebug --no-daemon --no-configuration-cache
 
       - name: Prepare APK asset
-        run: cp app/build/outputs/apk/debug/app-debug.apk Bugti-Editz.apk
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk Bugti-Editz.apk
+          ls -lh Bugti-Editz.apk
 
-      - name: Publish APK to latest GitHub Release
+      - name: Upload workflow build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Bugti-Editz-APK
+          path: Bugti-Editz.apk
+          retention-days: 30
+
+      - name: Publish APK to permanent Latest GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete latest --yes || true
-          git push origin :refs/tags/latest || true
-          gh release create latest Bugti-Editz.apk \
-            --target "${{ github.sha }}" \
-            --title "Bugti Editz Latest APK" \
-            --notes "Latest compiled Bugti Editz Android APK."
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest "${{ github.sha }}"
+          git push -f origin refs/tags/latest
+
+          RELEASE_NOTES="Automated BUGTI EDITZ build from commit ${GITHUB_SHA} (Run #${GITHUB_RUN_NUMBER}). Direct Latest APK: https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/Bugti-Editz.apk"
+
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest Bugti-Editz.apk --clobber
+            gh release edit latest \
+              --title "BUGTI EDITZ — Latest APK" \
+              --notes "$RELEASE_NOTES" \
+              --latest
+          else
+            gh release create latest Bugti-Editz.apk \
+              --target "${{ github.sha }}" \
+              --title "BUGTI EDITZ — Latest APK" \
+              --notes "$RELEASE_NOTES" \
+              --latest
+          fi
